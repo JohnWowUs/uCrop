@@ -48,6 +48,8 @@ public class TransformImageView extends ImageView {
     private float[] mInitialImageCorners;
     private float[] mInitialImageCenter;
 
+    private boolean mBitmapWasLoaded = false;
+
     private int mMaxBitmapSize = 0;
     private Uri mImageUri;
 
@@ -55,6 +57,10 @@ public class TransformImageView extends ImageView {
      * Interface for rotation and scale change notifying.
      */
     public interface TransformImageListener {
+
+        void onLoadComplete();
+
+        void onLoadFailure(@NonNull Exception e);
 
         void onRotate(float currentAngle);
 
@@ -124,7 +130,24 @@ public class TransformImageView extends ImageView {
     public void setImageUri(@NonNull Uri imageUri) throws Exception {
         mImageUri = imageUri;
         int maxBitmapSize = getMaxBitmapSize();
-        setImageBitmap(BitmapLoadUtils.decode(getContext(), imageUri, maxBitmapSize, maxBitmapSize));
+
+        BitmapLoadUtils.decodeBitmapInBackground(getContext(), imageUri, maxBitmapSize, maxBitmapSize,
+                new BitmapLoadUtils.BitmapLoadCallback() {
+                    @Override
+                    public void onBitmapLoaded(@NonNull final Bitmap bitmap) {
+                        mBitmapWasLoaded = true;
+                        setImageBitmap(bitmap);
+                        invalidate();
+                    }
+
+                    @Override
+                    public void onFailure(@NonNull Exception bitmapWorkerException) {
+                        Log.e(TAG, "onFailure: setImageUri", bitmapWorkerException);
+                        if (mTransformImageListener != null) {
+                            mTransformImageListener.onLoadFailure(bitmapWorkerException);
+                        }
+                    }
+                });
     }
 
     /**
@@ -251,7 +274,9 @@ public class TransformImageView extends ImageView {
     @Override
     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         super.onLayout(changed, left, top, right, bottom);
-        if (changed) {
+        if (changed || mBitmapWasLoaded) {
+            if (mBitmapWasLoaded) mBitmapWasLoaded = false;
+
             left = getPaddingLeft();
             top = getPaddingTop();
             right = getWidth() - getPaddingRight();
@@ -281,6 +306,10 @@ public class TransformImageView extends ImageView {
         RectF initialImageRect = new RectF(0, 0, w, h);
         mInitialImageCorners = RectUtils.getCornersFromRect(initialImageRect);
         mInitialImageCenter = RectUtils.getCenterFromRect(initialImageRect);
+
+        if (mTransformImageListener != null) {
+            mTransformImageListener.onLoadComplete();
+        }
     }
 
     /**

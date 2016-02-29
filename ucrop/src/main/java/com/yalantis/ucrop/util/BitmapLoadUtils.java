@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
 import android.media.ExifInterface;
 import android.net.Uri;
+import android.os.AsyncTask;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.support.annotation.NonNull;
@@ -14,7 +15,9 @@ import android.util.Log;
 
 import java.io.Closeable;
 import java.io.FileDescriptor;
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
 
 /**
  * Created by Oleksii Shliama (https://github.com/shliama).
@@ -23,54 +26,137 @@ public class BitmapLoadUtils {
 
     private static final String TAG = "BitmapLoadUtils";
 
-    @Nullable
-    public static Bitmap decode(@NonNull Context context, @Nullable Uri uri,
-                                int requiredWidth, int requiredHeight) throws Exception {
-        if (uri == null) {
-            return null;
+    public interface BitmapLoadCallback {
+
+        void onBitmapLoaded(@NonNull Bitmap bitmap);
+
+        void onFailure(@NonNull Exception bitmapWorkerException);
+
+    }
+
+    public static void decodeBitmapInBackground(@NonNull Context context, @Nullable Uri uri,
+                                                int requiredWidth, int requiredHeight,
+                                                BitmapLoadCallback loadCallback) {
+        new BitmapWorkerTask(context, uri, requiredWidth, requiredHeight, loadCallback).execute();
+    }
+
+    static class BitmapWorkerResult {
+
+        Bitmap mBitmapResult;
+        Exception mBitmapWorkerException;
+
+        public BitmapWorkerResult(@Nullable Bitmap bitmapResult, @Nullable Exception bitmapWorkerException) {
+            mBitmapResult = bitmapResult;
+            mBitmapWorkerException = bitmapWorkerException;
         }
 
-        final ParcelFileDescriptor parcelFileDescriptor = context.getContentResolver().openFileDescriptor(uri, "r");
-        FileDescriptor fileDescriptor;
-        if (parcelFileDescriptor != null) {
-            fileDescriptor = parcelFileDescriptor.getFileDescriptor();
-        } else {
-            return null;
+    }
+
+    /**
+     * Creates and returns a Bitmap for a given Uri.
+     * inSampleSize is calculated based on requiredWidth property. However can be adjusted if OOM occurs.
+     * If any EXIF config is found - bitmap is transformed properly.
+     */
+    static class BitmapWorkerTask extends AsyncTask<Void, Void, BitmapWorkerResult> {
+
+        private final Context mContext;
+        private final Uri mUri;
+        private final int mRequiredWidth;
+        private final int mRequiredHeight;
+
+        private final BitmapLoadCallback mBitmapLoadCallback;
+
+        public BitmapWorkerTask(@NonNull Context context, @Nullable Uri uri,
+                                int requiredWidth, int requiredHeight,
+                                BitmapLoadCallback loadCallback) {
+            mContext = context;
+            mUri = uri;
+            mRequiredWidth = requiredWidth;
+            mRequiredHeight = requiredHeight;
+            mBitmapLoadCallback = loadCallback;
         }
 
-        final BitmapFactory.Options options = new BitmapFactory.Options();
+        @Override
+        @NonNull
+        protected BitmapWorkerResult doInBackground(Void... params) {
+            if (mUri == null) {
+                return new BitmapWorkerResult(null, new NullPointerException("Uri cannot be null"));
+            }
 
-        options.inJustDecodeBounds = true;
-        BitmapFactory.decodeFileDescriptor(fileDescriptor, null, options);
-        options.inSampleSize = calculateInSampleSize(options, requiredWidth, requiredHeight);
-        options.inJustDecodeBounds = false;
+            final ParcelFileDescriptor parcelFileDescriptor;
+            try {
+                parcelFileDescriptor = mContext.getContentResolver().openFileDescriptor(mUri, "r");
+            } catch (FileNotFoundException e) {
+                return new BitmapWorkerResult(null, e);
+            }
 
-        Bitmap decodeSampledBitmap = BitmapFactory.decodeFileDescriptor(fileDescriptor, null, options);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
-            close(parcelFileDescriptor);
+            final FileDescriptor fileDescriptor;
+            if (parcelFileDescriptor != null) {
+                fileDescriptor = parcelFileDescriptor.getFileDescriptor();
+            } else {
+                return new BitmapWorkerResult(null, new NullPointerException("ParcelFileDescriptor was null for given Uri"));
+            }
+
+            final BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            BitmapFactory.decodeFileDescriptor(fileDescriptor, null, options);
+            options.inSampleSize = calculateInSampleSize(options, mRequiredWidth, mRequiredHeight);
+            options.inJustDecodeBounds = false;
+
+            Bitmap decodeSampledBitmap = null;
+
+            boolean success = false;
+            while (!success) {
+                try {
+                    decodeSampledBitmap = BitmapFactory.decodeFileDescriptor(fileDescriptor, null, options);
+                    success = true;
+                } catch (OutOfMemoryError error) {
+                    Log.e(TAG, "doInBackground: BitmapFactory.decodeFileDescriptor: ", error);
+                    options.inSampleSize++;
+                }
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+                close(parcelFileDescriptor);
+            }
+
+            int exifOrientation = getExifOrientation(mContext, mUri);
+            int exifDegrees = exifToDegrees(exifOrientation);
+            int exifTranslation = exifToTranslation(exifOrientation);
+
+            Matrix matrix = new Matrix();
+            if (exifDegrees != 0) {
+                matrix.preRotate(exifDegrees);
+            }
+            if (exifTranslation != 1) {
+                matrix.postScale(exifTranslation, 1);
+            }
+            if (!matrix.isIdentity()) {
+                return new BitmapWorkerResult(transformBitmap(decodeSampledBitmap, matrix), null);
+            }
+
+            return new BitmapWorkerResult(decodeSampledBitmap, null);
         }
 
-        ExifInterface exif = getExif(uri);
-        if (exif != null) {
-            int exifOrientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
-            // TODO Should not rotate bitmap but initially apply needed angle to the matrix
-            return rotateBitmap(decodeSampledBitmap, exifToDegrees(exifOrientation));
-        } else {
-            return decodeSampledBitmap;
+        @Override
+        protected void onPostExecute(@NonNull BitmapWorkerResult result) {
+            if (result.mBitmapWorkerException == null) {
+                mBitmapLoadCallback.onBitmapLoaded(result.mBitmapResult);
+            } else {
+                mBitmapLoadCallback.onFailure(result.mBitmapWorkerException);
+            }
         }
     }
 
-    public static Bitmap rotateBitmap(@Nullable Bitmap bitmap, int degrees) {
-        if (bitmap != null && degrees != 0) {
-            Matrix rotateMatrix = new Matrix();
-            rotateMatrix.setRotate(degrees, bitmap.getWidth() / (float) 2, bitmap.getHeight() / (float) 2);
-
-            Bitmap converted = Bitmap.createBitmap(bitmap, 0, 0,
-                    bitmap.getWidth(), bitmap.getHeight(), rotateMatrix, true);
+    public static Bitmap transformBitmap(@NonNull Bitmap bitmap, @NonNull Matrix transformMatrix) {
+        try {
+            Bitmap converted = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), transformMatrix, true);
             if (bitmap != converted) {
                 bitmap.recycle();
                 bitmap = converted;
             }
+        } catch (OutOfMemoryError error) {
+            Log.e(TAG, "transformBitmap: ", error);
         }
         return bitmap;
     }
@@ -91,25 +177,55 @@ public class BitmapLoadUtils {
         return inSampleSize;
     }
 
-    @Nullable
-    private static ExifInterface getExif(@NonNull Uri imageUri) {
+    private static int getExifOrientation(@NonNull Context context, @NonNull Uri imageUri) {
+        int orientation = ExifInterface.ORIENTATION_UNDEFINED;
         try {
-            return new ExifInterface(imageUri.getPath());
+            InputStream stream = context.getContentResolver().openInputStream(imageUri);
+            if (stream == null) {
+                return orientation;
+            }
+            orientation = new ImageHeaderParser(stream).getOrientation();
+            close(stream);
         } catch (IOException e) {
-            Log.w(TAG, "getExif: ", e);
+            Log.e(TAG, "getExifOrientation: " + imageUri.toString(), e);
         }
-        return null;
+        return orientation;
     }
 
     private static int exifToDegrees(int exifOrientation) {
-        if (exifOrientation == ExifInterface.ORIENTATION_ROTATE_90) {
-            return 90;
-        } else if (exifOrientation == ExifInterface.ORIENTATION_ROTATE_180) {
-            return 180;
-        } else if (exifOrientation == ExifInterface.ORIENTATION_ROTATE_270) {
-            return 270;
+        int rotation;
+        switch (exifOrientation) {
+            case ExifInterface.ORIENTATION_ROTATE_90:
+            case ExifInterface.ORIENTATION_TRANSPOSE:
+                rotation = 90;
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_180:
+            case ExifInterface.ORIENTATION_FLIP_VERTICAL:
+                rotation = 180;
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_270:
+            case ExifInterface.ORIENTATION_TRANSVERSE:
+                rotation = 270;
+                break;
+            default:
+                rotation = 0;
         }
-        return 0;
+        return rotation;
+    }
+
+    private static int exifToTranslation(int exifOrientation) {
+        int translation;
+        switch (exifOrientation) {
+            case ExifInterface.ORIENTATION_FLIP_HORIZONTAL:
+            case ExifInterface.ORIENTATION_FLIP_VERTICAL:
+            case ExifInterface.ORIENTATION_TRANSPOSE:
+            case ExifInterface.ORIENTATION_TRANSVERSE:
+                translation = -1;
+                break;
+            default:
+                translation = 1;
+        }
+        return translation;
     }
 
     @SuppressWarnings("ConstantConditions")

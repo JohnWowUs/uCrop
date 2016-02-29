@@ -1,5 +1,7 @@
 <RelativeLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
@@ -21,13 +23,30 @@
 
     </android.support.v7.widget.Toolbar>
 
-    <com.yalantis.ucrop.view.UCropView
-        android:id="@+id/ucrop"
+    <FrameLayout
+        android:id="@+id/ucrop_frame"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_above="@+id/wrapper_controls"
         android:layout_below="@+id/toolbar"
-        android:background="@color/ucrop_color_crop_background"/>
+        android:background="@color/ucrop_color_crop_background">
+
+        <ImageView
+            android:id="@+id/image_view_logo"
+            android:layout_width="200dp"
+            android:layout_height="200dp"
+            android:layout_gravity="center"
+            app:srcCompat="@drawable/ucrop_vector_ic_crop"
+            tools:background="@drawable/ucrop_vector_ic_crop"
+            tools:ignore="MissingPrefix"/>
+
+        <com.yalantis.ucrop.view.UCropView
+            android:id="@+id/ucrop"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="invisible"/>
+
+    </FrameLayout>
 
     <FrameLayout
         android:id="@+id/wrapper_controls"
@@ -78,17 +97,6 @@
         </FrameLayout>
 
         <FrameLayout
-            android:id="@+id/state_rotate"
-            style="@style/ucrop_WrapperIconState">
-
-            <ImageView
-                android:id="@+id/image_view_state_rotate"
-                style="@style/ucrop_ImageViewWidgetIcon"
-                android:src="@drawable/ucrop_ic_rotate"/>
-
-        </FrameLayout>
-
-        <FrameLayout
             android:id="@+id/state_aspect_ratio"
             style="@style/ucrop_WrapperIconState">
 
@@ -96,6 +104,17 @@
                 android:id="@+id/image_view_state_aspect_ratio"
                 style="@style/ucrop_ImageViewWidgetIcon"
                 android:src="@drawable/ucrop_ic_crop"/>
+
+        </FrameLayout>
+
+        <FrameLayout
+            android:id="@+id/state_rotate"
+            style="@style/ucrop_WrapperIconState">
+
+            <ImageView
+                android:id="@+id/image_view_state_rotate"
+                style="@style/ucrop_ImageViewWidgetIcon"
+                android:src="@drawable/ucrop_ic_rotate"/>
 
         </FrameLayout>
 
